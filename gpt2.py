@@ -1,4 +1,5 @@
 import math
+import time
 import torch
 import tiktoken
 import torch.nn as nn
@@ -266,9 +267,12 @@ class DataloaderLite:
         
         return x,y
 
-train_loader = DataloaderLite(B=4, T=32)
+train_loader = DataloaderLite(B=16, T=256)
+
+torch.set_float32_matmul_precision('high') # for tf32 instead of fp32
 model = GPT(GPTConfig())
 model.to(device)
+model = torch.compile(model)
 print(f"Using device: {device}")
 
 torch.manual_seed(1337)
@@ -277,10 +281,16 @@ if torch.cuda.is_available():
 
 optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
 for i in range(50):
+    t0  = time.time()
     x,y = train_loader.next_batch()
     x,y = x.to(device) , y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x,y)
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        logits, loss = model(x,y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0)*1000 #time difference in miliseconds
+    tokens_per_sec = (train_loader.B*train_loader.T) / (t1 - t0)
+    print(f"step {i}, loss: {loss.item()}, dt:{dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
